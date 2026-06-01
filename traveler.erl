@@ -21,6 +21,10 @@
 %%%   * The passenger monitors the center; if the center goes DOWN it stops.
 %%%   * No name is registered: the unique traveler name is just data, and the
 %%%     center enforces uniqueness against its own passenger list.
+%%%
+%%% HOW TO RUN AND TEST: see the "HOW TO RUN AND TEST" comment block at the
+%%% top of center.erl for the per-node deployment steps and the full command
+%%% sequence that exercises every interface function of all three modules.
 -module(traveler).
 
 -export([request_taxi/3, cancel_taxi/2]).

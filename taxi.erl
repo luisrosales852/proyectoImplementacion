@@ -30,6 +30,10 @@
 %%%     the taxi send to the center, so the center can confirm the CORRECT
 %%%     taxi is responding to the offer; on accept the taxi marks itself
 %%%     occupied, remembers the trip and notifies the center.
+%%%
+%%% HOW TO RUN AND TEST: see the "HOW TO RUN AND TEST" comment block at the
+%%% top of center.erl for the per-node deployment steps and the full command
+%%% sequence that exercises every interface function of all three modules.
 -module(taxi).
 
 %% Public API (run in the CALLER's process, using the taxi's PID).
