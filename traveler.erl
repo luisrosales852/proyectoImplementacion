@@ -69,20 +69,20 @@ wait_assignment(Name, CenterPid) ->
     receive
         {taxi_assigned, TaxiId, TripId} ->
             log_recv(io_lib:format("taxi ~p assigned (trip ~p)", [TaxiId, TripId])),
-            io:format(">> Traveler ~p: taxi ~p is on the way (trip ~p).~n",
+            io:format("Traveler ~p: taxi ~p is on the way (trip ~p).~n",
                       [Name, TaxiId, TripId]),
             wait_completion(Name, TripId, CenterPid);
         {no_taxi} ->
             log_recv("no taxi available"),
-            io:format(">> Traveler ~p: no taxi available right now.~n", [Name]);
+            io:format("Traveler ~p: no taxi available right now.~n", [Name]);
         {rejected, duplicate} ->
             log_recv("rejected (duplicate name)"),
-            io:format(">> Traveler ~p: rejected, name already in use.~n", [Name]);
+            io:format("Traveler ~p: rejected, name already in use.~n", [Name]);
         {cancelled} ->
             log_recv("request cancelled"),
-            io:format(">> Traveler ~p: request cancelled.~n", [Name]);
+            io:format("Traveler ~p: request cancelled.~n", [Name]);
         {'DOWN', _Ref, process, CenterPid, _Reason} ->
-            io:format(">> Traveler ~p: center is down.~n", [Name])
+            io:format("Traveler ~p: center is down.~n", [Name])
     end.
 
 %% Phase 2: assigned; wait for completion or cancellation.
@@ -90,13 +90,13 @@ wait_completion(Name, TripId, CenterPid) ->
     receive
         {trip_completed, TripId} ->
             log_recv(io_lib:format("trip ~p completed", [TripId])),
-            io:format(">> Traveler ~p: arrived at the airport. Trip ~p done. "
+            io:format("Traveler ~p: arrived at the airport. Trip ~p done. "
                       "Thank you!~n", [Name, TripId]);
         {cancelled} ->
             log_recv("trip cancelled"),
-            io:format(">> Traveler ~p: trip ~p cancelled.~n", [Name, TripId]);
+            io:format("Traveler ~p: trip ~p cancelled.~n", [Name, TripId]);
         {'DOWN', _Ref, process, CenterPid, _Reason} ->
-            io:format(">> Traveler ~p: center is down.~n", [Name])
+            io:format("Traveler ~p: center is down.~n", [Name])
     end.
 
 log_send(Msg) -> io:format("Sends: ~s~n", [Msg]).
