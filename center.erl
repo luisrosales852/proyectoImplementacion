@@ -32,9 +32,9 @@
 %%%     status/location lives in each taxi process, so the center QUERIES the
 %%%     taxis (get_state) when it needs to sort by distance or list them.
 %%%
-%%% =====================================================================
 %%% HOW TO RUN AND TEST  (deployment + full command sequence per node)
-%%% =====================================================================
+%%% 
+%%% 
 %%% The system is distributed: the center, the taxis and the travelers can
 %%% each run on their OWN Erlang node. Every inter-process message prints a
 %%% "Sends: ..." line on the SENDER's node and a "Receives: ..." line on the
@@ -67,7 +67,7 @@
 %%%    TripId is the center's counter shown in the offer line -- use it when
 %%%    calling accept_trip/reject_trip):
 %%%
-%%%    -- REGISTER TAXIS (each call spawns one taxi process) --
+%%%    REGISTER TAXIS (each call spawns one taxi process) --
 %%%    (taxis)  taxi:register_taxi(t1, {1,1}, C).  %% t1 active, available at {1,1}
 %%%    (taxis)  taxi:register_taxi(t2, {9,9}, C).  %% t2 active, available at {9,9}
 %%%    (taxis)  taxi:register_taxi(t1, {1,1}, C).  %% duplicate id -> {error, already_registered}
@@ -75,7 +75,7 @@
 %%%    (taxis)  taxi:current_location(t2, {8,8}).  %% move t2 to {8,8}
 %%%    (center) center:taxi_list(C).               %% both taxis listed as available
 %%%
-%%%    -- HAPPY PATH: request -> assign closest -> run -> complete (trip 1) --
+%%%    HAPPY PATH: request -> assign closest -> run -> complete (trip 1) --
 %%%    (riders) traveler:request_taxi(jose, {1,2}, C). %% closest taxi (t1) is offered trip 1
 %%%    (taxis)  taxi:accept_trip(t1, 1).               %% t1 accepts -> occupied
 %%%    (center) center:travelers_list(C).              %% jose "assigned to taxi t1"
@@ -83,34 +83,33 @@
 %%%    (taxis)  taxi:service_completed(t1).            %% drop at airport -> t1 available at {0,0}
 %%%    (center) center:completed_trips(C).             %% trip 1 in history, counter = 1
 %%%
-%%%    -- REJECT -> NEXT-CLOSEST FALLBACK, then DUPLICATE NAME (trip 2) --
+%%%    REJECT -> NEXT-CLOSEST FALLBACK, then DUPLICATE NAME (trip 2) --
 %%%    (riders) traveler:request_taxi(maria, {10,10}, C). %% closest (t2) offered trip 2
 %%%    (taxis)  taxi:reject_trip(t2, 2).                  %% t2 rejects -> center offers next taxi
 %%%    (taxis)  taxi:accept_trip(t1, 2).                  %% t1 takes trip 2 (occupied)
 %%%    (riders) traveler:request_taxi(maria, {0,0}, C).   %% maria still active -> {rejected, duplicate}
 %%%
-%%%    -- CANCEL BEFORE SERVICE STARTS: allowed (trip 3) --
+%%%    CANCEL BEFORE SERVICE STARTS: allowed (trip 3) --
 %%%    (riders) traveler:request_taxi(ana, {2,2}, C). %% only t2 available -> offered trip 3
 %%%    (taxis)  taxi:accept_trip(t2, 3).              %% assigned, not started
 %%%    (riders) traveler:cancel_taxi(ana, C).         %% ok -> t2 freed (trip 3 cancelled)
 %%%
-%%%    -- CANCEL AFTER SERVICE STARTS: refused; REMOVE OCCUPIED: refused (trip 4) --
+%%%    CANCEL AFTER SERVICE STARTS: refused; REMOVE OCCUPIED: refused (trip 4) --
 %%%    (riders) traveler:request_taxi(edu, {2,2}, C). %% t2 offered trip 4
 %%%    (taxis)  taxi:accept_trip(t2, 4).
 %%%    (taxis)  taxi:service_started(t2).             %% in_service
 %%%    (riders) traveler:cancel_taxi(edu, C).         %% {error, service_already_started}
 %%%    (taxis)  taxi:remove_taxi(t2).                 %% {error, occupied}
 %%%
-%%%    -- FINISH the open trips so the taxis become available again --
+%%%    FINISH the open trips so the taxis become available again --
 %%%    (taxis)  taxi:service_started(t1).             %% maria's trip 2 starts
 %%%    (taxis)  taxi:service_completed(t1).           %% t1 available
 %%%    (taxis)  taxi:service_completed(t2).           %% edu's trip 4 done -> t2 available
 %%%    (center) center:completed_trips(C).            %% trips 1,2,4 completed (3 cancelled), counter = 4
 %%%
-%%%    -- REMOVE AVAILABLE: succeeds; then SHUTDOWN --
+%%%    REMOVE AVAILABLE: succeeds; then SHUTDOWN --
 %%%    (taxis)  taxi:remove_taxi(t1).   %% available -> taxi process ends, center drops its entry
 %%%    (center) center:close_center(C). %% center stops; every taxi/passenger monitoring it stops too
-%%% =====================================================================
 -module(center).
 
 %% Public API (run in the CALLER's process).
@@ -123,7 +122,7 @@
 %% Timeouts (ms): 10000 = wait for a center reply; 60000 = wait for a taxi's
 %% accept/reject; 2000 = wait for the taxis' status replies.
 
-%% Center state is a plain hardcoded 6-element list (no record). The fixed
+%% Center state is a plain hardcoded 7-element list (no record). The fixed
 %% positions are, in order:
 %%   element 1 = airport      {X,Y}
 %%   element 2 = taxis        [{TaxiId, Pid}]   (ONLY id+pid, per the spec)
@@ -131,8 +130,18 @@
 %%   element 4 = active       [{TripId,TaxiId,TaxiPid,Name,PassPid,Origin,assigned|in_service}]
 %%   element 5 = completed    [{TripId,TaxiId,Name,Origin}] newest first
 %%   element 6 = counter      ++ on each accepted assignment
+%%   element 7 = offer        the offer currently being negotiated, or `none`:
+%%                            {offer, Ref, TripId, Name, Origin, PassPid,
+%%                                    TaxiId, TaxiPid, RestCandidates}
 %% Reads use lists:nth(N, State); updates rebuild the whole list so the
 %% comment on each line shows exactly which element is being kept or changed.
+%%
+%% The center NEVER blocks while an offer is outstanding: the offer is recorded
+%% in element 7 and the taxi's accept/reject arrives as an ordinary
+%% {trip_response, ...} message handled by the main loop, so list/cancel/new
+%% requests stay responsive. A 60s send_after timer advances to the next taxi
+%% if the current one stays silent; a late answer from a taxi we already moved
+%% past is detected as stale (and, if it was an accept, the taxi is freed).
 
 %% Create the dispatch center at the airport {X,Y}. Returns the center PID.
 open_center(Airport) ->
@@ -216,9 +225,9 @@ completed_trips(CenterPid) ->
 %%% PROCESS LOOP
 
 init(Airport) ->
-    %% Build the initial center state as a plain 6-element list:
-    %%   [airport, taxis, passengers, active, completed, counter]
-    loop([Airport, [], [], [], [], 0]).
+    %% Build the initial center state as a plain 7-element list:
+    %%   [airport, taxis, passengers, active, completed, counter, offer]
+    loop([Airport, [], [], [], [], 0, none]).
 
 loop(State) ->
     receive
@@ -243,7 +252,17 @@ loop(State) ->
                   lists:nth(3, State),   % element 3 = passengers
                   set_trip_state(TripId, in_service, lists:nth(4, State)), % element 4 = active (updated)
                   lists:nth(5, State),   % element 5 = completed
-                  lists:nth(6, State)]); % element 6 = counter
+                  lists:nth(6, State),   % element 6 = counter
+                  lists:nth(7, State)]); % element 7 = offer
+
+        %% A taxi answered the offer it was sent (handled in the loop, never by
+        %% blocking, so the rest of the center stays responsive).
+        {trip_response, Resp, TripId, TaxiId, TaxiPid} ->
+            loop(handle_trip_response(Resp, TripId, TaxiId, TaxiPid, State));
+
+        %% The 60s timer for an outstanding offer fired.
+        {offer_timeout, Ref} ->
+            loop(handle_offer_timeout(Ref, State));
 
         {service_completed, TaxiId, TripId} ->
             log_recv(io_lib:format("service completed by taxi ~p (trip ~p)",
@@ -298,62 +317,123 @@ handle_request(Name, Origin, PassPid, State) ->
                   [{Name, PassPid, Origin} | lists:nth(3, State)], % element 3 = passengers (updated)
                   lists:nth(4, State),   % element 4 = active
                   lists:nth(5, State),   % element 5 = completed
-                  lists:nth(6, State)],  % element 6 = counter
+                  lists:nth(6, State),   % element 6 = counter
+                  lists:nth(7, State)],  % element 7 = offer
             dispatch(Name, Origin, PassPid, S1)
     end.
 
-%% Query taxis, keep the available ones sorted by distance, offer in order.
+%% Query taxis, keep the available ones sorted by distance, offer to the first.
+%% The remaining candidates ride along in element 7 so the loop can advance to
+%% the next one when a reject/timeout arrives -- without ever blocking.
 dispatch(Name, Origin, PassPid, State) ->
     Ranked = lists:sort([ {sq_dist(Loc, Origin), TaxiId}
                           || {TaxiId, available, Loc}
                                  <- query_taxis(lists:nth(2, State)) ]), % element 2 = taxis
     Candidates = [ {TaxiId, taxi_pid(TaxiId, State)} || {_D, TaxiId} <- Ranked ],
     TripId = lists:nth(6, State) + 1,   % element 6 = counter
-    offer_loop(Candidates, TripId, Name, Origin, PassPid, State).
+    start_offer(Candidates, TripId, Name, Origin, PassPid, State).
 
-offer_loop([], _TripId, Name, _Origin, PassPid, State) ->
+%% No (more) candidates: the passenger gets no taxi and is dropped, and no
+%% offer stays outstanding (element 7 = none).
+start_offer([], _TripId, Name, _Origin, PassPid, State) ->
     log_send(io_lib:format("no taxi available for ~p", [Name])),
     PassPid ! {no_taxi},
-    %% rebuild the state, only changing element 3 = passengers
+    %% rebuild the state, clearing element 3 = passengers and element 7 = offer
     [lists:nth(1, State),   % element 1 = airport
      lists:nth(2, State),   % element 2 = taxis
      lists:keydelete(Name, 1, lists:nth(3, State)), % element 3 = passengers (updated)
      lists:nth(4, State),   % element 4 = active
      lists:nth(5, State),   % element 5 = completed
-     lists:nth(6, State)];  % element 6 = counter
-offer_loop([{TaxiId, TaxiPid} | Rest], TripId, Name, Origin, PassPid, State) ->
+     lists:nth(6, State),   % element 6 = counter
+     none];                 % element 7 = offer (cleared)
+%% Offer to the closest remaining taxi and record the outstanding offer in
+%% element 7. Returns immediately; the taxi's reply is handled in the loop.
+start_offer([{TaxiId, TaxiPid} | Rest], TripId, Name, Origin, PassPid, State) ->
     log_send(io_lib:format("trip offer ~p to taxi ~p (origin ~p)",
                            [TripId, TaxiId, Origin])),
     TaxiPid ! {offer, TripId, Name, Origin},
-    %% TaxiId and TaxiPid are already bound from THIS offer, so the patterns
-    %% below only match a response carrying that same TaxiId (and PID) -- the
-    %% center never mistakes which taxi is replying to the request.
-    receive
-        {trip_response, accept, TripId, TaxiId, TaxiPid} ->
+    Ref = make_ref(),
+    erlang:send_after(60000, self(), {offer_timeout, Ref}),
+    %% rebuild the state, only changing element 7 = offer
+    [lists:nth(1, State),   % element 1 = airport
+     lists:nth(2, State),   % element 2 = taxis
+     lists:nth(3, State),   % element 3 = passengers
+     lists:nth(4, State),   % element 4 = active
+     lists:nth(5, State),   % element 5 = completed
+     lists:nth(6, State),   % element 6 = counter
+     {offer, Ref, TripId, Name, Origin, PassPid, TaxiId, TaxiPid, Rest}]. % element 7 (updated)
+
+%% A taxi answered an offer. Only the taxi we are CURRENTLY waiting on (the one
+%% recorded in element 7, matched on TripId + TaxiId + TaxiPid) can act on the
+%% trip; a late answer from a taxi we already moved past is stale. A stale
+%% accept means the taxi marked itself occupied for nothing, so we free it via
+%% the existing {trip_cancelled,...} message instead of leaving it stuck.
+handle_trip_response(accept, TripId, TaxiId, TaxiPid, State) ->
+    case lists:nth(7, State) of   % element 7 = offer
+        {offer, _Ref, TripId, Name, Origin, PassPid, TaxiId, TaxiPid, _Rest} ->
             log_recv(io_lib:format("taxi ~p ACCEPTED trip ~p", [TaxiId, TripId])),
             log_send(io_lib:format("taxi ~p assigned to ~p (trip ~p)",
                                    [TaxiId, Name, TripId])),
             PassPid ! {taxi_assigned, TaxiId, TripId},
             Trip = {TripId, TaxiId, TaxiPid, Name, PassPid, Origin, assigned},
-            %% rebuild the state, changing element 4 = active and element 6 = counter
-            [lists:nth(1, State),         % element 1 = airport
-             lists:nth(2, State),         % element 2 = taxis
-             lists:nth(3, State),         % element 3 = passengers
-             [Trip | lists:nth(4, State)],% element 4 = active (updated)
-             lists:nth(5, State),         % element 5 = completed
-             TripId];                     % element 6 = counter (updated)
-        {trip_response, reject, TripId, TaxiId, TaxiPid} ->
+            %% rebuild, changing element 4 = active, element 6 = counter,
+            %% element 7 = offer (cleared)
+            [lists:nth(1, State),          % element 1 = airport
+             lists:nth(2, State),          % element 2 = taxis
+             lists:nth(3, State),          % element 3 = passengers
+             [Trip | lists:nth(4, State)], % element 4 = active (updated)
+             lists:nth(5, State),          % element 5 = completed
+             TripId,                       % element 6 = counter (updated)
+             none];                        % element 7 = offer (cleared)
+        _ ->
+            log_recv(io_lib:format("stale ACCEPT from taxi ~p (trip ~p) - "
+                                   "freeing it", [TaxiId, TripId])),
+            TaxiPid ! {trip_cancelled, TripId},
+            State
+    end;
+handle_trip_response(reject, TripId, TaxiId, TaxiPid, State) ->
+    case lists:nth(7, State) of   % element 7 = offer
+        {offer, _Ref, TripId, Name, Origin, PassPid, TaxiId, TaxiPid, Rest} ->
             log_recv(io_lib:format("taxi ~p REJECTED trip ~p - trying next",
                                    [TaxiId, TripId])),
-            offer_loop(Rest, TripId, Name, Origin, PassPid, State);
-        {'DOWN', _Ref, process, TaxiPid, _Reason} ->
-            log_recv(io_lib:format("taxi ~p died during offer - trying next",
-                                   [TaxiId])),
-            offer_loop(Rest, TripId, Name, Origin, PassPid,
-                       remove_taxi_pid(TaxiPid, State))
-    after 60000 ->
-        log_recv(io_lib:format("taxi ~p did not answer - trying next", [TaxiId])),
-        offer_loop(Rest, TripId, Name, Origin, PassPid, State)
+            start_offer(Rest, TripId, Name, Origin, PassPid, State);
+        _ ->
+            log_recv(io_lib:format("stale REJECT from taxi ~p (trip ~p) - ignored",
+                                   [TaxiId, TripId])),
+            State
+    end.
+
+%% Timer for an outstanding offer fired: if it is still the current offer (same
+%% Ref), give up on that taxi and try the next candidate; otherwise the taxi
+%% already answered (or the request moved on) and this timer is stale.
+handle_offer_timeout(Ref, State) ->
+    case lists:nth(7, State) of   % element 7 = offer
+        {offer, Ref, TripId, Name, Origin, PassPid, TaxiId, _TaxiPid, Rest} ->
+            log_recv(io_lib:format("taxi ~p did not answer - trying next", [TaxiId])),
+            start_offer(Rest, TripId, Name, Origin, PassPid, State);
+        _ ->
+            State
+    end.
+
+%% If the passenger Name still owns the outstanding offer (element 7), withdraw
+%% it: tell the offered taxi to drop its pending offer and clear element 7.
+%% Otherwise the offer is for someone else (or there is none) -- leave it.
+cancel_offer_of(Name, State) ->
+    case lists:nth(7, State) of   % element 7 = offer
+        {offer, _Ref, TripId, Name, _Origin, _PassPid, TaxiId, TaxiPid, _Rest} ->
+            log_send(io_lib:format("withdraw offer ~p from taxi ~p (~p cancelled)",
+                                   [TripId, TaxiId, Name])),
+            TaxiPid ! {offer_cancelled, TripId},
+            %% rebuild the state, only clearing element 7 = offer
+            [lists:nth(1, State),   % element 1 = airport
+             lists:nth(2, State),   % element 2 = taxis
+             lists:nth(3, State),   % element 3 = passengers
+             lists:nth(4, State),   % element 4 = active
+             lists:nth(5, State),   % element 5 = completed
+             lists:nth(6, State),   % element 6 = counter
+             none];                 % element 7 = offer (cleared)
+        _ ->
+            State
     end.
 
 %%% OTHER HANDLERS
@@ -374,7 +454,8 @@ handle_register(TaxiId, TaxiPid, State) ->
              lists:nth(3, State),   % element 3 = passengers
              lists:nth(4, State),   % element 4 = active
              lists:nth(5, State),   % element 5 = completed
-             lists:nth(6, State)]   % element 6 = counter
+             lists:nth(6, State),   % element 6 = counter
+             lists:nth(7, State)]   % element 7 = offer
     end.
 
 handle_completed(TaxiId, TripId, State) ->
@@ -389,7 +470,8 @@ handle_completed(TaxiId, TripId, State) ->
              lists:keydelete(Name, 1, lists:nth(3, State)),   % element 3 = passengers (updated)
              lists:keydelete(TripId, 1, lists:nth(4, State)), % element 4 = active (updated)
              [{TripId, TaxiId, Name, Origin} | lists:nth(5, State)], % element 5 = completed (updated)
-             lists:nth(6, State)];  % element 6 = counter
+             lists:nth(6, State),   % element 6 = counter
+             lists:nth(7, State)];  % element 7 = offer
         _ ->
             State
     end.
@@ -408,7 +490,8 @@ handle_cancel(Name, From, State) ->
              lists:keydelete(Name, 1, lists:nth(3, State)),   % element 3 = passengers (updated)
              lists:keydelete(TripId, 1, lists:nth(4, State)), % element 4 = active (updated)
              lists:nth(5, State),   % element 5 = completed
-             lists:nth(6, State)];  % element 6 = counter
+             lists:nth(6, State),   % element 6 = counter
+             lists:nth(7, State)];  % element 7 = offer
         {_TripId, _TaxiId, _TaxiPid, Name, _PassPid, _Origin, in_service} ->
             From ! {cancel_result, {error, service_already_started}},
             State;
@@ -417,32 +500,47 @@ handle_cancel(Name, From, State) ->
                 {Name, PassPid, _O} ->
                     PassPid ! {cancelled},
                     From ! {cancel_result, ok},
-                    %% rebuild the state, only changing element 3 = passengers
-                    [lists:nth(1, State),   % element 1 = airport
-                     lists:nth(2, State),   % element 2 = taxis
-                     lists:keydelete(Name, 1, lists:nth(3, State)), % element 3 = passengers (updated)
-                     lists:nth(4, State),   % element 4 = active
-                     lists:nth(5, State),   % element 5 = completed
-                     lists:nth(6, State)];  % element 6 = counter
+                    %% rebuild the state, dropping element 3 = passengers and,
+                    %% if this passenger still owns the outstanding offer,
+                    %% clearing element 7 = offer too (cancel_offer_of/2).
+                    cancel_offer_of(Name,
+                      [lists:nth(1, State),   % element 1 = airport
+                       lists:nth(2, State),   % element 2 = taxis
+                       lists:keydelete(Name, 1, lists:nth(3, State)), % element 3 = passengers (updated)
+                       lists:nth(4, State),   % element 4 = active
+                       lists:nth(5, State),   % element 5 = completed
+                       lists:nth(6, State),   % element 6 = counter
+                       lists:nth(7, State)]); % element 7 = offer
                 false ->
                     From ! {cancel_result, {error, not_found}},
                     State
             end
     end.
 
-%% A monitored taxi process went down: drop only its entry; center survives.
+%% A monitored taxi process went down: drop its entry; center survives. If the
+%% taxi that died is the one we are currently waiting on for an offer, advance
+%% to the next candidate instead of waiting out the 60s timer.
 handle_down(Pid, Reason, State) ->
     case lists:keyfind(Pid, 2, lists:nth(2, State)) of  % element 2 = taxis
         {TaxiId, Pid} ->
             log_recv(io_lib:format("taxi ~p process down (~p) - removing entry",
                                    [TaxiId, Reason])),
             %% rebuild the state, only changing element 2 = taxis
-            [lists:nth(1, State),   % element 1 = airport
-             lists:keydelete(Pid, 2, lists:nth(2, State)), % element 2 = taxis (updated)
-             lists:nth(3, State),   % element 3 = passengers
-             lists:nth(4, State),   % element 4 = active
-             lists:nth(5, State),   % element 5 = completed
-             lists:nth(6, State)];  % element 6 = counter
+            S1 = [lists:nth(1, State),   % element 1 = airport
+                  lists:keydelete(Pid, 2, lists:nth(2, State)), % element 2 = taxis (updated)
+                  lists:nth(3, State),   % element 3 = passengers
+                  lists:nth(4, State),   % element 4 = active
+                  lists:nth(5, State),   % element 5 = completed
+                  lists:nth(6, State),   % element 6 = counter
+                  lists:nth(7, State)],  % element 7 = offer
+            case lists:nth(7, S1) of   % element 7 = offer
+                {offer, _Ref, TripId, Name, Origin, PassPid, _TId, Pid, Rest} ->
+                    log_recv(io_lib:format("taxi ~p died during offer - trying next",
+                                           [TaxiId])),
+                    start_offer(Rest, TripId, Name, Origin, PassPid, S1);
+                _ ->
+                    S1
+            end;
         false ->
             State
     end.
@@ -472,15 +570,6 @@ sq_dist({X1, Y1}, {X2, Y2}) -> (X1 - X2) * (X1 - X2) + (Y1 - Y2) * (Y1 - Y2).
 taxi_pid(TaxiId, State) ->
     {TaxiId, Pid} = lists:keyfind(TaxiId, 1, lists:nth(2, State)), % element 2 = taxis
     Pid.
-
-remove_taxi_pid(Pid, State) ->
-    %% rebuild the state, only changing element 2 = taxis
-    [lists:nth(1, State),   % element 1 = airport
-     lists:keydelete(Pid, 2, lists:nth(2, State)), % element 2 = taxis (updated)
-     lists:nth(3, State),   % element 3 = passengers
-     lists:nth(4, State),   % element 4 = active
-     lists:nth(5, State),   % element 5 = completed
-     lists:nth(6, State)].  % element 6 = counter
 
 set_trip_state(TripId, NewSt, Active) ->
     case lists:keyfind(TripId, 1, Active) of

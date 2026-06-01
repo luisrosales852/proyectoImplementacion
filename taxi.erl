@@ -239,6 +239,24 @@ loop(T) ->
                     loop(T)
             end;
 
+        %% Center withdrew an offer we never accepted (the passenger cancelled
+        %% while the offer was still pending). Just drop element 5 = pending.
+        {offer_cancelled, TripId} ->
+            case lists:nth(5, T) of   % element 5 = pending
+                {TripId, _O} ->
+                    log_recv(io_lib:format("offer ~p withdrawn - clearing pending",
+                                           [TripId])),
+                    %% rebuild, only changing element 5 = pending
+                    loop([lists:nth(1, T),   % element 1 = id
+                          lists:nth(2, T),   % element 2 = loc
+                          lists:nth(3, T),   % element 3 = status
+                          lists:nth(4, T),   % element 4 = airport
+                          none,              % element 5 = pending (cleared)
+                          lists:nth(6, T),   % element 6 = trip
+                          lists:nth(7, T)]); % element 7 = center
+                _ -> loop(T)
+            end;
+
         %% Center cancelled a reserved (not yet started) trip.
         {trip_cancelled, TripId} ->
             case lists:nth(6, T) of   % element 6 = trip
