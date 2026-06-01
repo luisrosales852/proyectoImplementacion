@@ -1,4 +1,3 @@
-%%%=====================================================================
 %%% TC2037 - Implementation of Computational Methods
 %%% Activity 6.2 - Distributed Programming in Erlang
 %%% Distributed Taxi Rental System for Travel to an Airport
@@ -6,7 +5,7 @@
 %%% MODULE: traveler
 %%%
 %%% TEAM MEMBERS (fill in before submitting):
-%%%   Author: [Full Name - A01234567]
+%%%   Author: Luis Alvaro Rosales Salazar - A01255674
 %%%   Author: [Full Name - A01234567]
 %%%   Author: [Full Name - A01234567]
 %%%
@@ -22,26 +21,21 @@
 %%%   * The passenger monitors the center; if the center goes DOWN it stops.
 %%%   * No name is registered: the unique traveler name is just data, and the
 %%%     center enforces uniqueness against its own passenger list.
-%%%=====================================================================
 -module(traveler).
 
 -export([request_taxi/3, cancel_taxi/2]).
 -export([init_passenger/4]).
 
--define(CALL_TIMEOUT, 10000).
-
-%%%=====================================================================
 %%% PUBLIC API
-%%%=====================================================================
 
 %% Request a taxi. Traveler is a unique atom name, Origin is {X,Y}.
 %% Returns the passenger process PID.
 request_taxi(Traveler, Origin, CenterPid) ->
     Parent = self(),
-    Pid = spawn(?MODULE, init_passenger, [Traveler, Origin, CenterPid, Parent]),
+    Pid = spawn(traveler, init_passenger, [Traveler, Origin, CenterPid, Parent]),
     receive
         {passenger_ready, Pid} -> Pid
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after 10000 -> {error, timeout}
     end.
 
 %% Cancel a traveler's request (only works before the service starts).
@@ -54,12 +48,10 @@ cancel_taxi(Traveler, CenterPid) ->
         {cancel_result, {error, Reason}} ->
             io:format("Cannot cancel ~p: ~p~n", [Traveler, Reason]),
             {error, Reason}
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after 10000 -> {error, timeout}
     end.
 
-%%%=====================================================================
 %%% PASSENGER PROCESS
-%%%=====================================================================
 
 init_passenger(Name, Origin, CenterPid, Parent) ->
     erlang:monitor(process, CenterPid),    % center dies -> passenger stops

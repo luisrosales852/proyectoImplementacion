@@ -1,4 +1,3 @@
-%%%=====================================================================
 %%% TC2037 - Implementation of Computational Methods
 %%% Activity 6.2 - Distributed Programming in Erlang
 %%% Distributed Taxi Rental System for Travel to an Airport
@@ -6,7 +5,7 @@
 %%% MODULE: center  (Taxi Dispatch Center)
 %%%
 %%% TEAM MEMBERS (fill in before submitting):
-%%%   Author: [Full Name - A01234567]
+%%%   Author: Luis Alvaro Rosales Salazar - A01255674
 %%%   Author: [Full Name - A01234567]
 %%%   Author: [Full Name - A01234567]
 %%%
@@ -32,7 +31,6 @@
 %%%   * Per the spec the center stores ONLY {TaxiId, Pid} per taxi; the live
 %%%     status/location lives in each taxi process, so the center QUERIES the
 %%%     taxis (get_state) when it needs to sort by distance or list them.
-%%%=====================================================================
 -module(center).
 
 %% Public API (run in the CALLER's process).
@@ -42,32 +40,29 @@
 %% Spawned entry point.
 -export([init/1]).
 
--define(CALL_TIMEOUT, 10000).   % wait for a center reply (ms)
--define(OFFER_TIMEOUT, 60000).  % wait for a taxi's accept/reject (ms)
--define(QUERY_TIMEOUT, 2000).   % wait for the taxis' status replies (ms)
+%% Timeouts (ms): 10000 = wait for a center reply; 60000 = wait for a taxi's
+%% accept/reject; 2000 = wait for the taxis' status replies.
 
-%% Center state. `taxis` holds ONLY {TaxiId, Pid} as required by the spec.
--record(state, {airport,            % {X,Y}
-                taxis      = [],     % [{TaxiId, Pid}]
-                passengers = [],     % [{Name, PassPid, Origin}]
-                active     = [],     % [{TripId,TaxiId,TaxiPid,Name,PassPid,Origin,assigned|in_service}]
-                completed  = [],     % [{TripId,TaxiId,Name,Origin}] newest first
-                counter    = 0}).    % ++ on each accepted assignment
-
-%%%=====================================================================
-%%% PUBLIC API
-%%%=====================================================================
+%% Center state is a plain hardcoded 6-element list (no record). The fixed
+%% positions are, in order:
+%%   element 1 = airport      {X,Y}
+%%   element 2 = taxis        [{TaxiId, Pid}]   (ONLY id+pid, per the spec)
+%%   element 3 = passengers   [{Name, PassPid, Origin}]
+%%   element 4 = active       [{TripId,TaxiId,TaxiPid,Name,PassPid,Origin,assigned|in_service}]
+%%   element 5 = completed    [{TripId,TaxiId,Name,Origin}] newest first
+%%   element 6 = counter      ++ on each accepted assignment
+%% Reads use lists:nth(N, State); updates rebuild the whole list so the
+%% comment on each line shows exactly which element is being kept or changed.
 
 %% Create the dispatch center at the airport {X,Y}. Returns the center PID.
 open_center(Airport) ->
     case whereis(center) of
         undefined ->
-            Pid = spawn(?MODULE, init, [Airport]),
+            Pid = spawn(center, init, [Airport]),
             register(center, Pid),
-            io:format("== Taxi Dispatch Center OPEN at airport ~p on node ~p ==~n",
+            io:format("Taxi Dispatch Center open at airport ~p on node ~p~n",
                       [Airport, node()]),
-            io:format("   Center PID = ~p  (other nodes: use center:find(~p))~n",
-                      [Pid, node()]),
+            io:format("Center PID = ~p~n", [Pid]),
             Pid;
         Pid ->
             io:format("Center already open with PID ~p~n", [Pid]),
@@ -89,7 +84,7 @@ close_center(CenterPid) ->
     CenterPid ! {close, self()},
     receive
         {closed, CenterPid} -> ok
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after 10000 -> {error, timeout}
     end.
 
 %% List active taxis with all relevant info (queries each taxi live).
@@ -97,15 +92,14 @@ taxi_list(CenterPid) ->
     CenterPid ! {taxi_list, self()},
     receive
         {taxi_list_result, States} ->
-            io:format("~n--- ACTIVE TAXIS (~p) ---~n", [length(States)]),
+            io:format("~nActive taxis (~p):~n", [length(States)]),
             lists:foreach(
               fun({TaxiId, Status, Loc}) ->
                   io:format("  Taxi ~p | status: ~p | location: ~p~n",
                             [TaxiId, Status, Loc])
               end, States),
-            io:format("-------------------------~n"),
             ok
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after 10000 -> {error, timeout}
     end.
 
 %% List the current passengers.
@@ -113,15 +107,14 @@ travelers_list(CenterPid) ->
     CenterPid ! {travelers_list, self()},
     receive
         {travelers_list_result, Passengers, Active} ->
-            io:format("~n--- CURRENT PASSENGERS (~p) ---~n", [length(Passengers)]),
+            io:format("~nCurrent passengers (~p):~n", [length(Passengers)]),
             lists:foreach(
               fun({Name, _Pid, Origin}) ->
                   io:format("  Passenger ~p | origin: ~p | ~s~n",
                             [Name, Origin, passenger_status(Name, Active)])
               end, Passengers),
-            io:format("-------------------------------~n"),
             ok
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after 10000 -> {error, timeout}
     end.
 
 %% Show the history of completed trips and the trip counter.
@@ -129,24 +122,23 @@ completed_trips(CenterPid) ->
     CenterPid ! {completed_trips, self()},
     receive
         {completed_trips_result, Counter, Completed} ->
-            io:format("~n--- COMPLETED TRIPS (assignments: ~p, completed: ~p) ---~n",
+            io:format("~nCompleted trips (assignments: ~p, completed: ~p):~n",
                       [Counter, length(Completed)]),
             lists:foreach(
               fun({TripId, TaxiId, Name, Origin}) ->
                   io:format("  Trip ~p | taxi: ~p | passenger: ~p | origin: ~p~n",
                             [TripId, TaxiId, Name, Origin])
               end, lists:reverse(Completed)),
-            io:format("-----------------------------------------------~n"),
             ok
-    after ?CALL_TIMEOUT -> {error, timeout}
+    after 10000 -> {error, timeout}
     end.
 
-%%%=====================================================================
 %%% PROCESS LOOP
-%%%=====================================================================
 
 init(Airport) ->
-    loop(#state{airport = Airport}).
+    %% Build the initial center state as a plain 6-element list:
+    %%   [airport, taxis, passengers, active, completed, counter]
+    loop([Airport, [], [], [], [], 0]).
 
 loop(State) ->
     receive
@@ -165,8 +157,13 @@ loop(State) ->
         {service_started, TaxiId, TripId} ->
             log_recv(io_lib:format("service started by taxi ~p (trip ~p)",
                                    [TaxiId, TripId])),
-            loop(State#state{active =
-                     set_trip_state(TripId, in_service, State#state.active)});
+            %% rebuild the state, only changing element 4 = active
+            loop([lists:nth(1, State),   % element 1 = airport
+                  lists:nth(2, State),   % element 2 = taxis
+                  lists:nth(3, State),   % element 3 = passengers
+                  set_trip_state(TripId, in_service, lists:nth(4, State)), % element 4 = active (updated)
+                  lists:nth(5, State),   % element 5 = completed
+                  lists:nth(6, State)]); % element 6 = counter
 
         {service_completed, TaxiId, TripId} ->
             log_recv(io_lib:format("service completed by taxi ~p (trip ~p)",
@@ -177,23 +174,26 @@ loop(State) ->
             loop(handle_down(Pid, Reason, State));
 
         {taxi_list, From} ->
-            From ! {taxi_list_result, query_taxis(State#state.taxis)},
+            From ! {taxi_list_result,
+                    query_taxis(lists:nth(2, State))},  % element 2 = taxis
             loop(State);
 
         {travelers_list, From} ->
             From ! {travelers_list_result,
-                    State#state.passengers, State#state.active},
+                    lists:nth(3, State),    % element 3 = passengers
+                    lists:nth(4, State)},   % element 4 = active
             loop(State);
 
         {completed_trips, From} ->
             From ! {completed_trips_result,
-                    State#state.counter, State#state.completed},
+                    lists:nth(6, State),    % element 6 = counter
+                    lists:nth(5, State)},   % element 5 = completed
             loop(State);
 
         {close, From} ->
             log_recv("close_center request"),
-            io:format("== Closing center: ~p taxi(s) will stop via their "
-                      "monitors ==~n", [length(State#state.taxis)]),
+            io:format("Closing center: ~p taxi(s) will stop via their "
+                      "monitors~n", [length(lists:nth(2, State))]), % element 2 = taxis
             From ! {closed, self()};
             %% returning here stops the loop -> center process ends ->
             %% taxis/passengers monitoring it receive 'DOWN' and stop.
@@ -203,19 +203,22 @@ loop(State) ->
             loop(State)
     end.
 
-%%%=====================================================================
 %%% REQUEST HANDLING / ASSIGNMENT
-%%%=====================================================================
 
 handle_request(Name, Origin, PassPid, State) ->
-    case lists:keymember(Name, 1, State#state.passengers) of
+    case lists:keymember(Name, 1, lists:nth(3, State)) of  % element 3 = passengers
         true ->
             log_send(io_lib:format("reject ~p (duplicate passenger)", [Name])),
             PassPid ! {rejected, duplicate},
             State;
         false ->
-            S1 = State#state{passengers =
-                     [{Name, PassPid, Origin} | State#state.passengers]},
+            %% rebuild the state, only changing element 3 = passengers
+            S1 = [lists:nth(1, State),   % element 1 = airport
+                  lists:nth(2, State),   % element 2 = taxis
+                  [{Name, PassPid, Origin} | lists:nth(3, State)], % element 3 = passengers (updated)
+                  lists:nth(4, State),   % element 4 = active
+                  lists:nth(5, State),   % element 5 = completed
+                  lists:nth(6, State)],  % element 6 = counter
             dispatch(Name, Origin, PassPid, S1)
     end.
 
@@ -223,19 +226,28 @@ handle_request(Name, Origin, PassPid, State) ->
 dispatch(Name, Origin, PassPid, State) ->
     Ranked = lists:sort([ {sq_dist(Loc, Origin), TaxiId}
                           || {TaxiId, available, Loc}
-                                 <- query_taxis(State#state.taxis) ]),
+                                 <- query_taxis(lists:nth(2, State)) ]), % element 2 = taxis
     Candidates = [ {TaxiId, taxi_pid(TaxiId, State)} || {_D, TaxiId} <- Ranked ],
-    TripId = State#state.counter + 1,
+    TripId = lists:nth(6, State) + 1,   % element 6 = counter
     offer_loop(Candidates, TripId, Name, Origin, PassPid, State).
 
 offer_loop([], _TripId, Name, _Origin, PassPid, State) ->
     log_send(io_lib:format("no taxi available for ~p", [Name])),
     PassPid ! {no_taxi},
-    State#state{passengers = lists:keydelete(Name, 1, State#state.passengers)};
+    %% rebuild the state, only changing element 3 = passengers
+    [lists:nth(1, State),   % element 1 = airport
+     lists:nth(2, State),   % element 2 = taxis
+     lists:keydelete(Name, 1, lists:nth(3, State)), % element 3 = passengers (updated)
+     lists:nth(4, State),   % element 4 = active
+     lists:nth(5, State),   % element 5 = completed
+     lists:nth(6, State)];  % element 6 = counter
 offer_loop([{TaxiId, TaxiPid} | Rest], TripId, Name, Origin, PassPid, State) ->
     log_send(io_lib:format("trip offer ~p to taxi ~p (origin ~p)",
                            [TripId, TaxiId, Origin])),
     TaxiPid ! {offer, TripId, Name, Origin},
+    %% TaxiId and TaxiPid are already bound from THIS offer, so the patterns
+    %% below only match a response carrying that same TaxiId (and PID) -- the
+    %% center never mistakes which taxi is replying to the request.
     receive
         {trip_response, accept, TripId, TaxiId, TaxiPid} ->
             log_recv(io_lib:format("taxi ~p ACCEPTED trip ~p", [TaxiId, TripId])),
@@ -243,7 +255,13 @@ offer_loop([{TaxiId, TaxiPid} | Rest], TripId, Name, Origin, PassPid, State) ->
                                    [TaxiId, Name, TripId])),
             PassPid ! {taxi_assigned, TaxiId, TripId},
             Trip = {TripId, TaxiId, TaxiPid, Name, PassPid, Origin, assigned},
-            State#state{counter = TripId, active = [Trip | State#state.active]};
+            %% rebuild the state, changing element 4 = active and element 6 = counter
+            [lists:nth(1, State),         % element 1 = airport
+             lists:nth(2, State),         % element 2 = taxis
+             lists:nth(3, State),         % element 3 = passengers
+             [Trip | lists:nth(4, State)],% element 4 = active (updated)
+             lists:nth(5, State),         % element 5 = completed
+             TripId];                     % element 6 = counter (updated)
         {trip_response, reject, TripId, TaxiId, TaxiPid} ->
             log_recv(io_lib:format("taxi ~p REJECTED trip ~p - trying next",
                                    [TaxiId, TripId])),
@@ -253,63 +271,79 @@ offer_loop([{TaxiId, TaxiPid} | Rest], TripId, Name, Origin, PassPid, State) ->
                                    [TaxiId])),
             offer_loop(Rest, TripId, Name, Origin, PassPid,
                        remove_taxi_pid(TaxiPid, State))
-    after ?OFFER_TIMEOUT ->
+    after 60000 ->
         log_recv(io_lib:format("taxi ~p did not answer - trying next", [TaxiId])),
         offer_loop(Rest, TripId, Name, Origin, PassPid, State)
     end.
 
-%%%=====================================================================
 %%% OTHER HANDLERS
-%%%=====================================================================
 
 handle_register(TaxiId, TaxiPid, State) ->
-    case lists:keymember(TaxiId, 1, State#state.taxis) of
+    case lists:keymember(TaxiId, 1, lists:nth(2, State)) of  % element 2 = taxis
         true ->
             TaxiPid ! {register_error, already_registered},
             State;
         false ->
             erlang:monitor(process, TaxiPid),    % taxi dies -> we get 'DOWN'
             log_send(io_lib:format("airport ~p to taxi ~p",
-                                   [State#state.airport, TaxiId])),
-            TaxiPid ! {registered, State#state.airport},
-            State#state{taxis = [{TaxiId, TaxiPid} | State#state.taxis]}
+                                   [lists:nth(1, State), TaxiId])), % element 1 = airport
+            TaxiPid ! {registered, lists:nth(1, State)},  % element 1 = airport
+            %% rebuild the state, only changing element 2 = taxis
+            [lists:nth(1, State),   % element 1 = airport
+             [{TaxiId, TaxiPid} | lists:nth(2, State)], % element 2 = taxis (updated)
+             lists:nth(3, State),   % element 3 = passengers
+             lists:nth(4, State),   % element 4 = active
+             lists:nth(5, State),   % element 5 = completed
+             lists:nth(6, State)]   % element 6 = counter
     end.
 
 handle_completed(TaxiId, TripId, State) ->
-    case lists:keyfind(TripId, 1, State#state.active) of
+    case lists:keyfind(TripId, 1, lists:nth(4, State)) of  % element 4 = active
         {TripId, TaxiId, _TaxiPid, Name, PassPid, Origin, _St} ->
             log_send(io_lib:format("trip ~p completed -> passenger ~p",
                                    [TripId, Name])),
             PassPid ! {trip_completed, TripId},
-            State#state{
-              active     = lists:keydelete(TripId, 1, State#state.active),
-              passengers = lists:keydelete(Name, 1, State#state.passengers),
-              completed  = [{TripId, TaxiId, Name, Origin} | State#state.completed]};
+            %% rebuild the state, changing elements 3, 4 and 5
+            [lists:nth(1, State),   % element 1 = airport
+             lists:nth(2, State),   % element 2 = taxis
+             lists:keydelete(Name, 1, lists:nth(3, State)),   % element 3 = passengers (updated)
+             lists:keydelete(TripId, 1, lists:nth(4, State)), % element 4 = active (updated)
+             [{TripId, TaxiId, Name, Origin} | lists:nth(5, State)], % element 5 = completed (updated)
+             lists:nth(6, State)];  % element 6 = counter
         _ ->
             State
     end.
 
 handle_cancel(Name, From, State) ->
-    case find_trip_by_name(Name, State#state.active) of
+    case find_trip_by_name(Name, lists:nth(4, State)) of  % element 4 = active
         {TripId, _TaxiId, TaxiPid, Name, PassPid, _Origin, assigned} ->
             log_send(io_lib:format("cancel trip ~p (free taxi, notify passenger)",
                                    [TripId])),
             TaxiPid ! {trip_cancelled, TripId},
             PassPid ! {cancelled},
             From ! {cancel_result, ok},
-            State#state{
-              active     = lists:keydelete(TripId, 1, State#state.active),
-              passengers = lists:keydelete(Name, 1, State#state.passengers)};
+            %% rebuild the state, changing element 3 = passengers and element 4 = active
+            [lists:nth(1, State),   % element 1 = airport
+             lists:nth(2, State),   % element 2 = taxis
+             lists:keydelete(Name, 1, lists:nth(3, State)),   % element 3 = passengers (updated)
+             lists:keydelete(TripId, 1, lists:nth(4, State)), % element 4 = active (updated)
+             lists:nth(5, State),   % element 5 = completed
+             lists:nth(6, State)];  % element 6 = counter
         {_TripId, _TaxiId, _TaxiPid, Name, _PassPid, _Origin, in_service} ->
             From ! {cancel_result, {error, service_already_started}},
             State;
         false ->
-            case lists:keyfind(Name, 1, State#state.passengers) of
+            case lists:keyfind(Name, 1, lists:nth(3, State)) of  % element 3 = passengers
                 {Name, PassPid, _O} ->
                     PassPid ! {cancelled},
                     From ! {cancel_result, ok},
-                    State#state{passengers =
-                        lists:keydelete(Name, 1, State#state.passengers)};
+                    %% rebuild the state, only changing element 3 = passengers
+                    [lists:nth(1, State),   % element 1 = airport
+                     lists:nth(2, State),   % element 2 = taxis
+                     lists:keydelete(Name, 1, lists:nth(3, State)), % element 3 = passengers (updated)
+                     lists:nth(4, State),   % element 4 = active
+                     lists:nth(5, State),   % element 5 = completed
+                     lists:nth(6, State)];  % element 6 = counter
                 false ->
                     From ! {cancel_result, {error, not_found}},
                     State
@@ -318,18 +352,22 @@ handle_cancel(Name, From, State) ->
 
 %% A monitored taxi process went down: drop only its entry; center survives.
 handle_down(Pid, Reason, State) ->
-    case lists:keyfind(Pid, 2, State#state.taxis) of
+    case lists:keyfind(Pid, 2, lists:nth(2, State)) of  % element 2 = taxis
         {TaxiId, Pid} ->
             log_recv(io_lib:format("taxi ~p process down (~p) - removing entry",
                                    [TaxiId, Reason])),
-            State#state{taxis = lists:keydelete(Pid, 2, State#state.taxis)};
+            %% rebuild the state, only changing element 2 = taxis
+            [lists:nth(1, State),   % element 1 = airport
+             lists:keydelete(Pid, 2, lists:nth(2, State)), % element 2 = taxis (updated)
+             lists:nth(3, State),   % element 3 = passengers
+             lists:nth(4, State),   % element 4 = active
+             lists:nth(5, State),   % element 5 = completed
+             lists:nth(6, State)];  % element 6 = counter
         false ->
             State
     end.
 
-%%%=====================================================================
 %%% TAXI STATUS QUERY  (center keeps only id+pid, so it asks the taxis)
-%%%=====================================================================
 
 query_taxis(Taxis) ->
     Ref = make_ref(),
@@ -342,23 +380,27 @@ collect_states(Ref, N, Acc) ->
     receive
         {taxi_state, Ref, TaxiId, Status, Loc} ->
             collect_states(Ref, N - 1, [{TaxiId, Status, Loc} | Acc])
-    after ?QUERY_TIMEOUT ->
+    after 2000 ->
         Acc
     end.
 
-%%%=====================================================================
 %%% HELPERS
-%%%=====================================================================
 
 %% Squared distance: same ordering as Euclidean, no floating point needed.
 sq_dist({X1, Y1}, {X2, Y2}) -> (X1 - X2) * (X1 - X2) + (Y1 - Y2) * (Y1 - Y2).
 
 taxi_pid(TaxiId, State) ->
-    {TaxiId, Pid} = lists:keyfind(TaxiId, 1, State#state.taxis),
+    {TaxiId, Pid} = lists:keyfind(TaxiId, 1, lists:nth(2, State)), % element 2 = taxis
     Pid.
 
 remove_taxi_pid(Pid, State) ->
-    State#state{taxis = lists:keydelete(Pid, 2, State#state.taxis)}.
+    %% rebuild the state, only changing element 2 = taxis
+    [lists:nth(1, State),   % element 1 = airport
+     lists:keydelete(Pid, 2, lists:nth(2, State)), % element 2 = taxis (updated)
+     lists:nth(3, State),   % element 3 = passengers
+     lists:nth(4, State),   % element 4 = active
+     lists:nth(5, State),   % element 5 = completed
+     lists:nth(6, State)].  % element 6 = counter
 
 set_trip_state(TripId, NewSt, Active) ->
     case lists:keyfind(TripId, 1, Active) of
