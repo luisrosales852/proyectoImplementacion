@@ -4,7 +4,7 @@
 %%%
 %%% MODULE: taxi
 %%%
-%%% TEAM MEMBERS (fill in before submitting):
+%%% TEAM MEMBERS:
 %%% Author: Luis Alvaro Rosales Salazar - A01255674
 %%% Author: Gabriel Rosendo Fuente Escalante - A01660266
 %%% Author: Eduardo Didier Aguilar Alvarez - A00841850
