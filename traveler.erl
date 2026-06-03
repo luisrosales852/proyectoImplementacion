@@ -5,9 +5,10 @@
 %%% MODULE: traveler
 %%%
 %%% TEAM MEMBERS (fill in before submitting):
-%%%   Author: Luis Alvaro Rosales Salazar - A01255674
-%%%   Author: [Full Name - A01234567]
-%%%   Author: [Full Name - A01234567]
+%%% Author: Luis Alvaro Rosales Salazar - A01255674
+%%% Author: Gabriel Rosendo Fuente Escalante - A01660266
+%%% Author: Eduardo Didier Aguilar Alvarez - A00841850
+%%% Author: Brian Roberto Gomez Martinez - A00841404
 %%%
 %%% PURPOSE
 %%%   A traveler requests a taxi to the airport. Each request spawns a
@@ -16,8 +17,8 @@
 %%%   trip is completed or cancelled - then the process ends.
 %%%
 %%% PROCESS MODEL  (plain, PID-based)
-%%%   * request_taxi/3 spawns the passenger process and RETURNS its PID.
-%%%     CenterPid comes from open_center/1 or center:find/1.
+%%%   * request_taxi/2 spawns the passenger process and RETURNS its PID. The
+%%%     center is located by its cluster-wide `global` name (no PID passed).
 %%%   * The passenger monitors the center; if the center goes DOWN it stops.
 %%%   * No name is registered: the unique traveler name is just data, and the
 %%%     center enforces uniqueness against its own passenger list.
@@ -27,22 +28,40 @@
 %%% sequence that exercises every interface function of all three modules.
 -module(traveler).
 
--export([request_taxi/3, cancel_taxi/2]).
+-export([request_taxi/2, cancel_taxi/1]).
 -export([init_passenger/4]).
 
 %%% PUBLIC API
 
 %% Request a taxi. Traveler is a unique atom name, Origin is {X,Y}.
-%% Returns the passenger process PID.
-request_taxi(Traveler, Origin, CenterPid) ->
-    Parent = self(),
-    Pid = spawn(traveler, init_passenger, [Traveler, Origin, CenterPid, Parent]),
-    receive
-        {passenger_ready, Pid} -> Pid
-    after 10000 -> {error, timeout}
+%% Returns the passenger process PID. The center is located by its cluster-wide
+%% `global` name (no PID passed); the node must be connected to the center node.
+request_taxi(Traveler, Origin) ->
+    case global:whereis_name(center) of
+        undefined ->
+            io:format("Traveler ~p: no center reachable "
+                      "(connect to the center node first).~n", [Traveler]),
+            {error, no_center};
+        CenterPid ->
+            Parent = self(),
+            Pid = spawn(traveler, init_passenger,
+                        [Traveler, Origin, CenterPid, Parent]),
+            receive
+                {passenger_ready, Pid} -> Pid
+            after 10000 -> {error, timeout}
+            end
     end.
 
 %% Cancel a traveler's request (only works before the service starts).
+cancel_taxi(Traveler) ->
+    case global:whereis_name(center) of
+        undefined ->
+            io:format("Traveler ~p: no center reachable.~n", [Traveler]),
+            {error, no_center};
+        CenterPid ->
+            cancel_taxi(Traveler, CenterPid)
+    end.
+
 cancel_taxi(Traveler, CenterPid) ->
     log_send(io_lib:format("cancel taxi request for ~p", [Traveler])),
     CenterPid ! {cancel, Traveler, self()},

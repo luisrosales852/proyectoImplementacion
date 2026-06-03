@@ -5,9 +5,10 @@
 %%% MODULE: taxi
 %%%
 %%% TEAM MEMBERS (fill in before submitting):
-%%%   Author: Luis Alvaro Rosales Salazar - A01255674
-%%%   Author: [Full Name - A01234567]
-%%%   Author: [Full Name - A01234567]
+%%% Author: Luis Alvaro Rosales Salazar - A01255674
+%%% Author: Gabriel Rosendo Fuente Escalante - A01660266
+%%% Author: Eduardo Didier Aguilar Alvarez - A00841850
+%%% Author: Brian Roberto Gomez Martinez - A00841404
 %%%
 %%% PURPOSE
 %%%   Each registered taxi is its own process that holds its status
@@ -15,7 +16,7 @@
 %%%   queries, receives trip offers and runs the transport service.
 %%%
 %%% PROCESS MODEL  (PID-based, with a local name per taxi)
-%%%   * register_taxi/3 spawns the taxi process and RETURNS its PID. Once the
+%%%   * register_taxi/2 spawns the taxi process and RETURNS its PID. Once the
 %%%     center confirms registration the process ALSO registers itself locally
 %%%     under its TaxiId atom, so every operator command can address the taxi
 %%%     by its id exactly as the spec writes it -- e.g.
@@ -37,7 +38,7 @@
 -module(taxi).
 
 %% Public API (run in the CALLER's process, using the taxi's PID).
--export([register_taxi/3, current_location/2,
+-export([register_taxi/2, current_location/2,
          accept_trip/2, reject_trip/2,
          service_started/1, service_completed/1,
          remove_taxi/1, consult_taxi/1]).
@@ -59,8 +60,19 @@
 
 %%% PUBLIC API
 
-%% Register a taxi at the center. Returns the taxi's PID (use it for the
-%% other commands). CenterPid comes from open_center/1 or center:find/1.
+%% Register a taxi at the center. Returns the taxi's PID. The center is found
+%% by its cluster-wide `global` name, so no PID is passed; the node must be
+%% connected to the center node first (e.g. net_adm:ping/1).
+register_taxi(TaxiId, InitialLocation) ->
+    case global:whereis_name(center) of
+        undefined ->
+            io:format("Taxi ~p not registered: no center reachable "
+                      "(connect to the center node first).~n", [TaxiId]),
+            {error, no_center};
+        CenterPid ->
+            register_taxi(TaxiId, InitialLocation, CenterPid)
+    end.
+
 register_taxi(TaxiId, InitialLocation, CenterPid) ->
     Parent = self(),
     Pid = spawn(taxi, init, [TaxiId, InitialLocation, CenterPid, Parent]),

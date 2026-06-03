@@ -5,9 +5,11 @@
 %%% MODULE: center  (Taxi Dispatch Center)
 %%%
 %%% TEAM MEMBERS (fill in before submitting):
-%%%   Author: Luis Alvaro Rosales Salazar - A01255674
-%%%   Author: [Full Name - A01234567]
-%%%   Author: [Full Name - A01234567]
+%%% Author: Luis Alvaro Rosales Salazar - A01255674
+%%% Author: Gabriel Rosendo Fuente Escalante - A01660266
+%%% Author: Eduardo Didier Aguilar Alvarez - A00841850
+%%% Author: Brian Roberto Gomez Martinez - A00841404
+%%% 
 %%%
 %%% PURPOSE
 %%%   The Taxi Dispatch Center is a single process that centralizes the
@@ -16,12 +18,14 @@
 %%%   the closest AVAILABLE taxi (Euclidean distance) to each request,
 %%%   generates a unique trip id per assignment and keeps a trip counter.
 %%%
-%%% PROCESS MODEL  (plain, PID-based message passing)
-%%%   * open_center/1 spawns ONE process and returns its PID. The PID is how
-%%%     travelers and taxis talk to the center: you always send to a PID.
-%%%   * The only registered name is `center`, registered LOCALLY on the
-%%%     center's own node, so that a shell on another node can fetch the PID
-%%%     once with center:find/1 (rpc whereis) and then pass that PID around.
+%%% PROCESS MODEL  (registered name, no PID passed by callers)
+%%%   * open_center/1 spawns ONE process and registers the name `center` BOTH
+%%%     locally and in the `global` (cluster-wide) name registry. Callers never
+%%%     pass a PID: every public function resolves the center by name via
+%%%     center_pid/0 (global:whereis_name/1, falling back to local whereis/1).
+%%%   * Because the name is global, a traveler or taxi on ANY connected node
+%%%     reaches the center just by calling the API -- the only prerequisite is
+%%%     that the node is connected to the center node (e.g. net_adm:ping/1).
 %%%   * Lifecycle uses erlang:monitor (no links, no trap_exit):
 %%%       - the center monitors every taxi: a taxi dying delivers
 %%%         {'DOWN',_,process,Pid,_} and the center just drops that entry;
@@ -53,68 +57,71 @@
 %%%    Each shell prompt shows its node name, e.g. (center@host)1>; use that
 %%%    host wherever <host> appears below.
 %%%
-%%% 2) OPEN THE CENTER (on the center node). It registers locally as 'center':
+%%% 2) OPEN THE CENTER (on the center node). It registers the name 'center'
+%%%    BOTH locally and in the cluster-wide `global` registry, so taxis and
+%%%    travelers on other nodes reach it by name -- no PID needs to be passed:
 %%%      (center@host)1> center:open_center({0,0}).   %% airport at {0,0}
 %%%
-%%% 3) FETCH THE CENTER PID ON THE OTHER NODES and bind it to C; pass C to
-%%%    every traveler/center call (taxi commands address taxis by their id):
-%%%      (taxis@host)1>  C = center:find('center@<host>').
-%%%      (riders@host)1> C = center:find('center@<host>').
-%%%    SINGLE NODE? Do it all in one shell: bind C = center:open_center({0,0}).
-%%%    and skip center:find -- the same C is used everywhere below.
+%%% 3) CONNECT THE OTHER NODES TO THE CENTER NODE so `global` propagates the
+%%%    'center' name to them. Any connection works; the simplest is a ping
+%%%    (do this ONCE per node, BEFORE issuing any command below):
+%%%      (taxis@host)1>  net_adm:ping('center@<host>').   %% -> pong
+%%%      (riders@host)1> net_adm:ping('center@<host>').   %% -> pong
+%%%    SINGLE NODE? Do it all in one shell: center:open_center({0,0}). then run
+%%%    the commands below directly -- global resolves the name in the same VM.
 %%%
 %%% 4) FULL COMMAND SEQUENCE  (the (node) prefix says where to type each one;
 %%%    TripId is the center's counter shown in the offer line -- use it when
 %%%    calling accept_trip/reject_trip):
 %%%
 %%%    REGISTER TAXIS (each call spawns one taxi process) --
-%%%    (taxis)  taxi:register_taxi(t1, {1,1}, C).  %% t1 active, available at {1,1}
-%%%    (taxis)  taxi:register_taxi(t2, {9,9}, C).  %% t2 active, available at {9,9}
-%%%    (taxis)  taxi:register_taxi(t1, {1,1}, C).  %% duplicate id -> {error, already_registered}
-%%%    (taxis)  taxi:consult_taxi(t2).             %% show t2 status + location
-%%%    (taxis)  taxi:current_location(t2, {8,8}).  %% move t2 to {8,8}
-%%%    (center) center:taxi_list(C).               %% both taxis listed as available
+%%%    (taxis)  taxi:register_taxi(t1, {1,1}).  %% t1 active, available at {1,1}
+%%%    (taxis)  taxi:register_taxi(t2, {9,9}).  %% t2 active, available at {9,9}
+%%%    (taxis)  taxi:register_taxi(t1, {1,1}).  %% duplicate id -> {error, already_registered}
+%%%    (taxis)  taxi:consult_taxi(t2).          %% show t2 status + location
+%%%    (taxis)  taxi:current_location(t2, {8,8}). %% move t2 to {8,8}
+%%%    (center) center:taxi_list().             %% both taxis listed as available
 %%%
 %%%    HAPPY PATH: request -> assign closest -> run -> complete (trip 1) --
-%%%    (riders) traveler:request_taxi(jose, {1,2}, C). %% closest taxi (t1) is offered trip 1
-%%%    (taxis)  taxi:accept_trip(t1, 1).               %% t1 accepts -> occupied
-%%%    (center) center:travelers_list(C).              %% jose "assigned to taxi t1"
-%%%    (taxis)  taxi:service_started(t1).              %% t1 picks up at {1,2} -> in_service
-%%%    (taxis)  taxi:service_completed(t1).            %% drop at airport -> t1 available at {0,0}
-%%%    (center) center:completed_trips(C).             %% trip 1 in history, counter = 1
+%%%    (riders) traveler:request_taxi(jose, {1,2}). %% closest taxi (t1) is offered trip 1
+%%%    (taxis)  taxi:accept_trip(t1, 1).            %% t1 accepts -> occupied
+%%%    (center) center:travelers_list().            %% jose "assigned to taxi t1"
+%%%    (taxis)  taxi:service_started(t1).           %% t1 picks up at {1,2} -> in_service
+%%%    (taxis)  taxi:service_completed(t1).         %% drop at airport -> t1 available at {0,0}
+%%%    (center) center:completed_trips().           %% trip 1 in history, counter = 1
 %%%
 %%%    REJECT -> NEXT-CLOSEST FALLBACK, then DUPLICATE NAME (trip 2) --
-%%%    (riders) traveler:request_taxi(maria, {10,10}, C). %% closest (t2) offered trip 2
-%%%    (taxis)  taxi:reject_trip(t2, 2).                  %% t2 rejects -> center offers next taxi
-%%%    (taxis)  taxi:accept_trip(t1, 2).                  %% t1 takes trip 2 (occupied)
-%%%    (riders) traveler:request_taxi(maria, {0,0}, C).   %% maria still active -> {rejected, duplicate}
+%%%    (riders) traveler:request_taxi(maria, {10,10}). %% closest (t2) offered trip 2
+%%%    (taxis)  taxi:reject_trip(t2, 2).               %% t2 rejects -> center offers next taxi
+%%%    (taxis)  taxi:accept_trip(t1, 2).               %% t1 takes trip 2 (occupied)
+%%%    (riders) traveler:request_taxi(maria, {0,0}).   %% maria still active -> {rejected, duplicate}
 %%%
 %%%    CANCEL BEFORE SERVICE STARTS: allowed (trip 3) --
-%%%    (riders) traveler:request_taxi(ana, {2,2}, C). %% only t2 available -> offered trip 3
-%%%    (taxis)  taxi:accept_trip(t2, 3).              %% assigned, not started
-%%%    (riders) traveler:cancel_taxi(ana, C).         %% ok -> t2 freed (trip 3 cancelled)
+%%%    (riders) traveler:request_taxi(ana, {2,2}). %% only t2 available -> offered trip 3
+%%%    (taxis)  taxi:accept_trip(t2, 3).           %% assigned, not started
+%%%    (riders) traveler:cancel_taxi(ana).         %% ok -> t2 freed (trip 3 cancelled)
 %%%
 %%%    CANCEL AFTER SERVICE STARTS: refused; REMOVE OCCUPIED: refused (trip 4) --
-%%%    (riders) traveler:request_taxi(edu, {2,2}, C). %% t2 offered trip 4
+%%%    (riders) traveler:request_taxi(edu, {2,2}). %% t2 offered trip 4
 %%%    (taxis)  taxi:accept_trip(t2, 4).
-%%%    (taxis)  taxi:service_started(t2).             %% in_service
-%%%    (riders) traveler:cancel_taxi(edu, C).         %% {error, service_already_started}
-%%%    (taxis)  taxi:remove_taxi(t2).                 %% {error, occupied}
+%%%    (taxis)  taxi:service_started(t2).          %% in_service
+%%%    (riders) traveler:cancel_taxi(edu).         %% {error, service_already_started}
+%%%    (taxis)  taxi:remove_taxi(t2).              %% {error, occupied}
 %%%
 %%%    FINISH the open trips so the taxis become available again --
-%%%    (taxis)  taxi:service_started(t1).             %% maria's trip 2 starts
-%%%    (taxis)  taxi:service_completed(t1).           %% t1 available
-%%%    (taxis)  taxi:service_completed(t2).           %% edu's trip 4 done -> t2 available
-%%%    (center) center:completed_trips(C).            %% trips 1,2,4 completed (3 cancelled), counter = 4
+%%%    (taxis)  taxi:service_started(t1).          %% maria's trip 2 starts
+%%%    (taxis)  taxi:service_completed(t1).        %% t1 available
+%%%    (taxis)  taxi:service_completed(t2).        %% edu's trip 4 done -> t2 available
+%%%    (center) center:completed_trips().          %% trips 1,2,4 completed (3 cancelled), counter = 4
 %%%
 %%%    REMOVE AVAILABLE: succeeds; then SHUTDOWN --
 %%%    (taxis)  taxi:remove_taxi(t1).   %% available -> taxi process ends, center drops its entry
-%%%    (center) center:close_center(C). %% center stops; every taxi/passenger monitoring it stops too
+%%%    (center) center:close_center(). %% center stops; every taxi/passenger monitoring it stops too
 -module(center).
 
 %% Public API (run in the CALLER's process).
--export([open_center/1, find/1, close_center/1,
-         taxi_list/1, travelers_list/1, completed_trips/1]).
+-export([open_center/1, close_center/0,
+         taxi_list/0, travelers_list/0, completed_trips/0]).
 
 %% Spawned entry point.
 -export([init/1]).
@@ -144,11 +151,14 @@
 %% past is detected as stale (and, if it was an accept, the taxi is freed).
 
 %% Create the dispatch center at the airport {X,Y}. Returns the center PID.
+%% Registers the name 'center' both locally and globally so callers on any
+%% connected node reach it by name (no PID is ever passed around).
 open_center(Airport) ->
     case whereis(center) of
         undefined ->
             Pid = spawn(center, init, [Airport]),
-            register(center, Pid),
+            register(center, Pid),                 % local name (own node)
+            global:register_name(center, Pid),     % cluster-wide name
             io:format("Taxi Dispatch Center open at airport ~p on node ~p~n",
                       [Airport, node()]),
             io:format("Center PID = ~p~n", [Pid]),
@@ -158,25 +168,33 @@ open_center(Airport) ->
             Pid
     end.
 
-%% Bootstrap helper: fetch the center PID from another node's shell.
-%%   On a taxi/traveler node:  C = center:find('center@host').
-find(Node) ->
-    case rpc:call(Node, erlang, whereis, [center]) of
-        Pid when is_pid(Pid) -> Pid;
-        Other ->
-            io:format("No center found on ~p (~p)~n", [Node, Other]),
-            undefined
+%% Resolve the center PID by name: prefer the cluster-wide `global` name, fall
+%% back to the local registration (single node). Returns a PID or `undefined`.
+center_pid() ->
+    case global:whereis_name(center) of
+        undefined -> whereis(center);
+        Pid       -> Pid
     end.
 
 %% Terminate the dispatch center (taxis/passengers stop via their monitors).
-close_center(CenterPid) ->
-    CenterPid ! {close, self()},
-    receive
-        {closed, CenterPid} -> ok
-    after 10000 -> {error, timeout}
+close_center() ->
+    case center_pid() of
+        undefined -> io:format("No center is open.~n"), {error, no_center};
+        CenterPid ->
+            CenterPid ! {close, self()},
+            receive
+                {closed, CenterPid} -> ok
+            after 10000 -> {error, timeout}
+            end
     end.
 
 %% List active taxis with all relevant info (queries each taxi live).
+taxi_list() ->
+    case center_pid() of
+        undefined -> io:format("No center is open.~n"), {error, no_center};
+        CenterPid -> taxi_list(CenterPid)
+    end.
+
 taxi_list(CenterPid) ->
     CenterPid ! {taxi_list, self()},
     receive
@@ -192,6 +210,12 @@ taxi_list(CenterPid) ->
     end.
 
 %% List the current passengers.
+travelers_list() ->
+    case center_pid() of
+        undefined -> io:format("No center is open.~n"), {error, no_center};
+        CenterPid -> travelers_list(CenterPid)
+    end.
+
 travelers_list(CenterPid) ->
     CenterPid ! {travelers_list, self()},
     receive
@@ -207,6 +231,12 @@ travelers_list(CenterPid) ->
     end.
 
 %% Show the history of completed trips and the trip counter.
+completed_trips() ->
+    case center_pid() of
+        undefined -> io:format("No center is open.~n"), {error, no_center};
+        CenterPid -> completed_trips(CenterPid)
+    end.
+
 completed_trips(CenterPid) ->
     CenterPid ! {completed_trips, self()},
     receive
